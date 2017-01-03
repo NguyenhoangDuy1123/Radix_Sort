@@ -42,6 +42,28 @@
 
  */
 
+const dim3 hist_blockSize(512);
+
+__global__ void histogram(unsigned int* in, unsigned int* hist, int n,unsigned int nBins, unsigned int mask, unsigned int current_bits)
+{
+	extern __shared__ unsigned int s_local_hist[];
+	
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	
+	for(int j = threadIdx.x; j < nBins; j += blockDim.x)
+		s_local_hist[j] = 0;
+	__syncthreads();
+	
+	if (i < n)
+	{
+		unsigned int bin = (in[i] >> current_bits) & mask;
+		atomicAdd(&s_local_hist[bin], 1);
+	}
+	__syncthreads();
+	
+	for (unsigned int bin = threadIdx.x; bin < nBins; bin += blockDim.x)
+		atomicAdd(&hist[bin], s_local_hist[bin]);
+}
 
 void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_inputPos,
@@ -50,8 +72,14 @@ void your_sort(unsigned int* const d_inputVals,
                const size_t numElems)
 {
     unsigned int nBits = 2;
+	
+	dim3 hist_gridSize((numElems - 1)/(hist_blockSize.x) + 1);
     unsigned int nBins = 1 << nBits;
-    unsigned int* hist = new unsigned int[nBins];
+    unsigned int *d_hist;
+	cudaMalloc(&d_hist, nBins * sizeof(unsigned int));
+	
+	unsigned int *hist = new unsigned int[nBins];
+	
     unsigned int* histScan = new unsigned int[nBins];
     
     unsigned int* src = new unsigned int[numElems];
@@ -63,19 +91,19 @@ void your_sort(unsigned int* const d_inputVals,
     cudaMemcpy(src, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost);
     cudaMemcpy(src_pos, d_inputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost);
     
+	unsigned int *d_src;
+	cudaMalloc(&d_src, numElems * sizeof(unsigned int));
+	
+	unsigned int mask = (1 << nBits) - 1;
     for (unsigned int i = 0; i < sizeof(unsigned int)*8; i += nBits)
     {
-        unsigned int mask = (1 << nBits) - 1;
-        
+		cudaMemcpy(d_src, src, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice);
 		//Histogram
-        memset(hist, 0, nBins*sizeof(unsigned int));
+		cudaMemset(d_hist, 0, nBins * sizeof(unsigned int));
         
-        for (unsigned int j = 0; j < numElems; j++)
-        {
-            unsigned int bin = (src[j] >> i) & mask;
-            hist[bin]++;
-        }
-        
+		histogram<<<hist_gridSize, hist_blockSize, nBins*sizeof(unsigned int)>>>(d_src, d_hist, numElems, nBins, mask, i);
+        cudaMemcpy(hist, d_hist, nBins * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+		
 		//Exclusive Scan
         histScan[0] = 0;
         for (unsigned int j = 1; j < nBins; j++)
