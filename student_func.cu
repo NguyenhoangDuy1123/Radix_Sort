@@ -58,7 +58,7 @@ __global__ void histogram(unsigned int* in, unsigned int* hist, int n,unsigned i
 		atomicAdd(&hist[bin], s_local_hist[bin]);
 }
 
-__global__ void scan(unsigned int *in,unsigned int *out, int n)
+__global__ void scan(unsigned int *in,unsigned int *out, int n, unsigned int* blkSums)
 {   
 	extern __shared__ int blkData[];
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -84,6 +84,37 @@ __global__ void scan(unsigned int *in,unsigned int *out, int n)
 		else
 			out[i] = blkData[i - 1];
 }
+
+// __global__ void scanBlks2(unsigned int *in, unsigned int *out, int n, unsigned int* blkSums)
+// {
+//   // 1. Each block loads data from GMEM to SMEM
+//   extern __shared__ unsigned int blkData[];
+//   int i1 = blockIdx.x * 2 * blockDim.x + threadIdx.x;
+//   int i2 = i1 + blockDim.x;
+//   if (i1 < n)
+//     blkData[threadIdx.x] = in[i1];
+//   if (i2 < n)
+//     blkData[threadIdx.x + blockDim.x] = in[i2];
+//   __syncthreads();
+
+//   // 2. Each block does scan with data on SMEM
+//   // 2.1. Reduction phase
+//   for (int stride = 1; stride < 2 * blockDim.x; stride *= 2)
+//   {
+//     int blkDataIdx = (threadIdx.x + 1) * 2 * stride - 1; // To avoid warp divergence
+//     if (blkDataIdx < 2 * blockDim.x)
+//       blkData[blkDataIdx] += blkData[blkDataIdx - stride];
+//     __syncthreads();
+//   }
+//   // 2.2. Post-reduction phase
+//   for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
+//   {
+//     int blkDataIdx = (threadIdx.x + 1) * 2 * stride - 1 + stride; // Wow
+//     if (blkDataIdx < 2 * blockDim.x)
+//       blkData[blkDataIdx] += blkData[blkDataIdx - stride];
+//     __syncthreads();
+//   }
+// }
 
 const dim3 hist_blockSize(256);
 const dim3 scan_blockSize(256);
@@ -135,7 +166,7 @@ void your_sort(unsigned int* const d_inputVals,
 		cudaDeviceSynchronize();
 		 
 		//Exclusive Scan
-		scan<<<1, scan_blockSize, scan_blockSize.x*sizeof(unsigned int)>>>(d_hist, d_histScan, nBins);
+		scan<<<1, scan_blockSize, scan_blockSize.x*sizeof(unsigned int)>>>(d_hist, d_histScan, nBins, NULL);
 		cudaMemcpy(histScan, d_histScan, nBins * sizeof(unsigned int), cudaMemcpyDeviceToHost);
 		
 		cudaDeviceSynchronize();
