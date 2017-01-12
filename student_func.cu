@@ -85,7 +85,7 @@ __global__ void scan(unsigned int *in,unsigned int *out, int n, unsigned int* bl
 			out[i] = blkData[i - 1];
 }
 
-// __global__ void scanBlks2(unsigned int *in, unsigned int *out, int n, unsigned int* blkSums)
+// __global__ void scan(unsigned int *in, unsigned int *out, int n, unsigned int* blkSums)
 // {
 //   // 1. Each block loads data from GMEM to SMEM
 //   extern __shared__ unsigned int blkData[];
@@ -116,6 +116,22 @@ __global__ void scan(unsigned int *in,unsigned int *out, int n, unsigned int* bl
 //   }
 // }
 
+__global__ void swap(unsigned int *in,unsigned int *in_pos, unsigned int *out, unsigned int *out_pos, unsigned int n)
+{
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	
+	if (i < n)
+	{
+		unsigned int temp = in[i];
+		in[i] = out[i];
+		out[i] = temp;
+		
+		temp = in_pos[i];
+		in_pos[i] = out_pos[i];
+		out_pos[i] = temp;
+	}
+}
+
 const dim3 hist_blockSize(256);
 const dim3 scan_blockSize(256);
 
@@ -132,7 +148,13 @@ void your_sort(unsigned int* const d_inputVals,
 			nBits = i - 1;
 			break;
 		}
-	
+	cudaStream_t stream1, stream2;
+	// , stream3, stream4;
+	cudaStreamCreate(&stream1);
+	cudaStreamCreate(&stream2);
+	// cudaStreamCreate(&stream3);
+	// cudaStreamCreate(&stream4);
+
 	dim3 hist_gridSize((numElems - 1)/(hist_blockSize.x) + 1);
     unsigned int nBins = 1 << nBits;
     unsigned int *d_hist;
@@ -148,8 +170,8 @@ void your_sort(unsigned int* const d_inputVals,
     unsigned int* des = new unsigned int[numElems];
     unsigned int* des_pos = new unsigned int[numElems];
     
-    cudaMemcpy(src, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(src_pos, d_inputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(src, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost, stream1);
+    cudaMemcpyAsync(src_pos, d_inputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToHost, stream2);
     
 	unsigned int *d_src;
 	cudaMalloc(&d_src, numElems * sizeof(unsigned int));
@@ -157,7 +179,7 @@ void your_sort(unsigned int* const d_inputVals,
 	unsigned int mask = (1 << nBits) - 1;
     for (unsigned int i = 0; i < sizeof(unsigned int)*8; i += nBits)
     {
-		cudaMemcpy(d_src, src, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice);
+		cudaMemcpyAsync(d_src, src, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice, stream1);
 		//Histogram
 		cudaMemset(d_hist, 0, nBins * sizeof(unsigned int));
         
@@ -167,7 +189,7 @@ void your_sort(unsigned int* const d_inputVals,
 		 
 		//Exclusive Scan
 		scan<<<1, scan_blockSize, scan_blockSize.x*sizeof(unsigned int)>>>(d_hist, d_histScan, nBins, NULL);
-		cudaMemcpy(histScan, d_histScan, nBins * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+		cudaMemcpyAsync(histScan, d_histScan, nBins * sizeof(unsigned int), cudaMemcpyDeviceToHost, stream2);
 		
 		cudaDeviceSynchronize();
             
@@ -193,12 +215,12 @@ void your_sort(unsigned int* const d_inputVals,
         }
     }
 	
-	cudaMemcpy(d_outputVals, src, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_outputPos, src_pos, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice);
+	cudaMemcpyAsync(d_outputVals, src, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice, stream1);
+    cudaMemcpyAsync(d_outputPos, src_pos, numElems * sizeof(unsigned int), cudaMemcpyHostToDevice, stream2);
     
-    delete[] histScan;
-    delete[] src;
-    delete[] src_pos;
-    delete[] des;
-    delete[] des_pos;
+    // delete[] histScan;
+    // delete[] src;
+    // delete[] src_pos;
+    // delete[] des;
+    // delete[] des_pos;
 }
