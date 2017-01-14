@@ -6,6 +6,7 @@
 #include <iostream>
 #include <stdio.h>
 
+//1 block Hist xử lý 3xBlockDim data
 __global__ void histogram(unsigned int* in, unsigned int* hist, int n,unsigned int nBins, unsigned int mask, unsigned int current_bits)
 {
 	extern __shared__ unsigned int s_local_hist[];
@@ -15,11 +16,14 @@ __global__ void histogram(unsigned int* in, unsigned int* hist, int n,unsigned i
 	
 	__syncthreads();
 	
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	if (i < n)
+	for(int j = threadIdx.x; j < 4*blockDim.x; j += blockDim.x)
 	{
-		unsigned int bin = (in[i] >> current_bits) & mask;
-		atomicAdd(&s_local_hist[bin], 1);
+		int i = 4*blockIdx.x * blockDim.x + j;
+		if (i < n)
+		{
+			unsigned int bin = (in[i] >> current_bits) & mask;
+			atomicAdd(&s_local_hist[bin], 1);
+		}
 	}
 	__syncthreads();
 	
@@ -117,8 +121,8 @@ __global__ void scatter(unsigned int *in,unsigned int *in_pos, unsigned int *out
 {
 	if (threadIdx.x == 0)
 	{
-		unsigned int start = blockIdx.x*blockDim.x;
-		for (int i = start; i < min(n, start + blockDim.x) ; i++)
+		unsigned int start = 4*blockIdx.x*blockDim.x;
+		for (int i = start; i < min(n, start + 4*blockDim.x) ; i++)
 		{
 			unsigned int bin = (in[i] >> current_bits) & mask;
 			out[d_histScan[blockIdx.x + bin*gridDim.x]] = in[i];
@@ -127,25 +131,26 @@ __global__ void scatter(unsigned int *in,unsigned int *in_pos, unsigned int *out
 		}
 	}
 }
+
 __global__ void swap(unsigned int *in, unsigned int *in_pos, unsigned int *out, unsigned int *out_pos, unsigned int n)
 {
 	unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
 	
 	if (i < n)
 	{
-		unsigned int temp = in[i];
-		in[i] = out[i];
-		out[i] = temp;
+		in[i] = in[i] ^ out[i];
+		out[i] = in[i] ^ out[i];
+		in[i] = in[i] ^ out[i];
 		
-		temp = in_pos[i];
-		in_pos[i] = out_pos[i];
-		out_pos[i] = temp;
+		in_pos[i] = in_pos[i] ^ out_pos[i];
+		out_pos[i] = in_pos[i] ^ out_pos[i];
+		in_pos[i] = in_pos[i] ^ out_pos[i];
 	}
 }
 
-const dim3 hist_blockSize(512);
+const dim3 hist_blockSize(128);
 const dim3 scan_blockSize(512);
-const dim3 swap_blockSize(512);
+const dim3 swap_blockSize(1024);
 
 void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_inputPos,
@@ -156,7 +161,7 @@ void your_sort(unsigned int* const d_inputVals,
     unsigned int nBits = 8;
 	unsigned int nBins = 1 << nBits;
 		
-	dim3 hist_gridSize((numElems - 1)/(hist_blockSize.x) + 1);
+	dim3 hist_gridSize((numElems - 1)/(4*hist_blockSize.x) + 1);
 	dim3 scan_gridSize((hist_gridSize.x * nBins - 1)/(scan_blockSize.x) + 1);
 	dim3 swap_gridSize((numElems - 1)/(swap_blockSize.x) + 1);
 	
@@ -173,25 +178,16 @@ void your_sort(unsigned int* const d_inputVals,
 		//Histogram
 		histogram<<<hist_gridSize, hist_blockSize, nBins*sizeof(unsigned int)>>>(d_inputVals, d_hist, numElems, nBins, mask, i);
 		
-		cudaDeviceSynchronize();
-		
 		//Exclusive Scan
 		scanAll(d_hist, d_histScan, hist_gridSize.x * nBins, scan_blockSize.x, 2*scan_blockSize.x);
-		
 		exclusive_scan<<<scan_gridSize, scan_blockSize>>>(d_hist, d_histScan, numElems);
-		cudaDeviceSynchronize();
 		
 		//Scatter
 		scatter<<<hist_gridSize, hist_blockSize>>>(d_inputVals, d_inputPos, d_outputVals, d_outputPos, numElems, d_histScan, mask, i, nBins);
 		
-		cudaDeviceSynchronize();
-		
 		//Swap
 		swap<<<swap_gridSize, swap_blockSize>>>(d_inputVals, d_inputPos, d_outputVals, d_outputPos, numElems);
-		
-		cudaDeviceSynchronize();
     }
 	
 	swap<<<swap_gridSize, swap_blockSize>>>(d_inputVals, d_inputPos, d_outputVals, d_outputPos, numElems);
-	cudaDeviceSynchronize();
 }
