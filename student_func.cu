@@ -2,7 +2,17 @@
 #include "utils.h"
 #include <iostream>
 #include <stdio.h>
-
+#define CHECK(call)                                                            \
+{                                                                              \
+    const cudaError_t error = call;                                            \
+    if (error != cudaSuccess)                                                  \
+    {                                                                          \
+        fprintf(stderr, "Error: %s:%d, ", __FILE__, __LINE__);                 \
+        fprintf(stderr, "code: %d, reason: %s\n", error,                       \
+                cudaGetErrorString(error));                                    \
+        exit(1);                                                               \
+    }                                                                          \
+}
 __global__ void histogram(unsigned int* in, unsigned int* hist, int n,unsigned int nBins, unsigned int mask, unsigned int current_bits)
 {
 	extern __shared__ unsigned int s_local_hist[];
@@ -177,21 +187,16 @@ __global__ void pre_sort(unsigned int *in, unsigned int *in_pos, unsigned int *o
 	__syncthreads();
 	
 	//Scan
-	for (int stride = 1; stride < 2 * nBins; stride *= 2)
-	{
-		int blkDataIdx = (threadIdx.x + 1) * 2 * stride - 1; 
-		if (blkDataIdx < nBins)
-			blk_Scan[blkDataIdx] += blk_Scan[blkDataIdx - stride];
-		__syncthreads();
-	}
-
-	for (int stride = nBins / 2; stride > 0; stride /= 2)
-	{
-		int blkDataIdx = (threadIdx.x + 1) * 2 * stride - 1 + stride; 
-		if (blkDataIdx < nBins)
-			blk_Scan[blkDataIdx] += blk_Scan[blkDataIdx - stride];
-		__syncthreads();
-	}
+	for (int stride = 1; stride < nBins; stride *= 2)
+    {	
+    	int inVal;
+        if (threadIdx.x >= stride && threadIdx.x < nBins)
+        	inVal = blk_Scan[threadIdx.x - stride];
+        __syncthreads();
+        if (threadIdx.x >= stride && threadIdx.x < nBins)
+        	blk_Scan[threadIdx.x] += inVal;
+        __syncthreads();
+    }
 	__syncthreads();
 	
 	for (int i = threadIdx.x; i < nBins; i += blockDim.x)
@@ -221,14 +226,16 @@ void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_outputPos,
                const size_t numElems)
 {
-    unsigned int nBits;
-	for (int i = 1; i < 32; i *=2)
-		if (1 << i >= hist_blockSize.x)
+    unsigned int nBits = 1;
+	for (int i = 2; i < 32; i *=2)
+	{
+		if ( 1 << i > hist_blockSize.x)
 		{
-			nBits = i/=2;
+			nBits = i /= 2;
 			break;
 		}
-		
+	}
+	
 	unsigned int nBins = 1 << nBits;
 		
 	dim3 hist_gridSize((numElems - 1)/(hist_blockSize.x) + 1);
@@ -247,19 +254,25 @@ void your_sort(unsigned int* const d_inputVals,
     {
 		//Pre_sort
 		pre_sort<<<hist_gridSize, hist_blockSize, (2*hist_blockSize.x + 2*nBins)*sizeof(unsigned int)>>>(d_inputVals, d_inputPos, d_inputVals, d_inputPos, numElems, nBins, mask, i, d_hist);
-		
+		CHECK(cudaDeviceSynchronize());
+    	CHECK(cudaGetLastError());
 		//Histogram
 		histogram<<<hist_gridSize, hist_blockSize, nBins*sizeof(unsigned int)>>>(d_inputVals, d_hist, numElems, nBins, mask, i);
-		
+		CHECK(cudaDeviceSynchronize());
+    	CHECK(cudaGetLastError());
 		//Exclusive Scan
 		scanAll(d_hist, d_histScan, hist_gridSize.x * nBins, scan_blockSize.x, 2*scan_blockSize.x);
 		exclusive_scan<<<scan_gridSize, scan_blockSize>>>(d_hist, d_histScan, numElems);
-		
+		CHECK(cudaDeviceSynchronize());
+    	CHECK(cudaGetLastError());
 		//Scatter
 		scatter<<<hist_gridSize, hist_blockSize, nBins*sizeof(unsigned int)>>>(d_inputVals, d_inputPos, d_outputVals, d_outputPos, numElems, d_histScan, mask, i, nBins);
-		
+		CHECK(cudaDeviceSynchronize());
+    	CHECK(cudaGetLastError());
 		//Swap
 		swap<<<swap_gridSize, swap_blockSize>>>(d_inputVals, d_inputPos, d_outputVals, d_outputPos, numElems);
+		CHECK(cudaDeviceSynchronize());
+    	CHECK(cudaGetLastError());
     }
 	
 	swap<<<swap_gridSize, swap_blockSize>>>(d_inputVals, d_inputPos, d_outputVals, d_outputPos, numElems);
